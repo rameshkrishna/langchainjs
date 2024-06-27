@@ -55,7 +55,6 @@ class FirestoreVectorStore extends VectorStore {
   distanceMeasure: "EUCLIDEAN" | "COSINE" | "DOT_PRODUCT";
 
   caller: AsyncCaller;
-
   googleAuth: GoogleAuth;
 
   /**
@@ -94,7 +93,33 @@ class FirestoreVectorStore extends VectorStore {
 
     this.firestore = new Firestore({ googleAuth, ...firestoreConfig });
   }
+  /**
+   * Initializes Firestore with Google Auth Library
+   * @param {FirebaseFirestore.Settings} firestoreConfig - Firestore configuration settings.
+   */
+  async initializeFirestore(
+    firestoreConfig?: FirebaseFirestore.Settings
+  ): Promise<void> {
+    try {
+      const auth = new GoogleAuth({
+        scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+      });
 
+      const client = await auth.getClient();
+      const projectId = await auth.getProjectId();
+
+      //console.log(client.credentials, projectId);
+
+      this.firestore = new Firestore({
+        ...firestoreConfig,
+        projectId,
+        authClient: client,
+      });
+    } catch (error) {
+      console.error("Error initializing Firestore:", error);
+      throw new Error("Failed to initialize Firestore with Google Auth.");
+    }
+  }
   _vectorstoreType(): string {
     return "FirestoreVectorStore";
   }
@@ -257,7 +282,7 @@ class FirestoreVectorStore extends VectorStore {
 
       for (const doc of querySnapshot.docs) {
         batch.delete(doc.ref);
-        batchCount += 1;
+        batchCount++;
 
         if (batchCount === BATCH_LIMIT) {
           await batch.commit();
@@ -290,7 +315,7 @@ class FirestoreVectorStore extends VectorStore {
       for (const id of ids) {
         const docRef = this.firestore.collection(this.collectionName).doc(id);
         batch.delete(docRef);
-        batchCount += 1;
+        batchCount++;
 
         if (batchCount === BATCH_LIMIT) {
           await batch.commit();
@@ -314,7 +339,6 @@ class FirestoreVectorStore extends VectorStore {
    * @param {Record<string, any>} filter - The filter to apply.
    * @returns {Promise<void>}
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async deleteDocumentsByFilter(filter: Record<string, any>): Promise<void> {
     try {
       let query: FirebaseFirestore.Query<FirebaseFirestore.DocumentData> =
@@ -335,7 +359,7 @@ class FirestoreVectorStore extends VectorStore {
 
       for (const doc of querySnapshot.docs) {
         batch.delete(doc.ref);
-        batchCount += 1;
+        batchCount++;
 
         if (batchCount === BATCH_LIMIT) {
           await batch.commit();
