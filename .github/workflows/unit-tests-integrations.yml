@@ -59,15 +59,15 @@ jobs:
           first_entry=true
           for package in "${packages[@]}"; do
             echo "Checking package: $package"
-            if echo "$changed_files" | grep -q "$package"; then
+            # if echo "$changed_files" | grep -q "$package"; then
               echo "Package $package found in changed files."
               if [ "$first_entry" = true ]; then
               matrix="$matrix{\"os\": \"ubuntu-latest\", \"node-version\": \"18\", \"package\": \"$package\"},{\"os\": \"ubuntu-latest\", \"node-version\": \"20\", \"package\": \"$package\"}"
               first_entry=false
-            else
-              matrix="$matrix, {\"os\": \"ubuntu-latest\", \"node-version\": \"18\", \"package\": \"$package\"},{\"os\": \"ubuntu-latest\", \"node-version\": \"20\", \"package\": \"$package\"}"
+              else
+                matrix="$matrix, {\"os\": \"ubuntu-latest\", \"node-version\": \"18\", \"package\": \"$package\"},{\"os\": \"ubuntu-latest\", \"node-version\": \"20\", \"package\": \"$package\"}"
             fi
-            fi
+            # fi
           done
           matrix="$matrix]}"
           echo "Matrix: $matrix"
