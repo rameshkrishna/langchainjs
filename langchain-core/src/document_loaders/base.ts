@@ -29,7 +29,7 @@ export abstract class BaseDocumentLoader implements DocumentLoader {
    */
   async loadAndSplit(splitter?: BaseDocumentTransformer): Promise<Document[]> {
     if (splitter === undefined) {
-      throw new Error("You must pass a text splitter to use this method.");
+      throw new Error("You must passs a text splitter to use this method.");
     }
     const docs = await this.load();
     return splitter.invoke(docs);
