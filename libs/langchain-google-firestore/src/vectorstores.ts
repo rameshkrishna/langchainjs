@@ -26,7 +26,7 @@ export interface FirebaseStoreParams extends AsyncCallerParams {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   filter?: Record<string, any>;
   distanceMeasure?: "EUCLIDEAN" | "COSINE" | "DOT_PRODUCT";
-  //googleAuth: GoogleAuth;
+  // googleAuth: GoogleAuth;
 }
 
 interface AddDocumentsOptions {
@@ -61,6 +61,7 @@ class FirestoreVectorStore extends VectorStore {
   distanceMeasure: "EUCLIDEAN" | "COSINE" | "DOT_PRODUCT";
 
   caller: AsyncCaller;
+
   private googleAuth: GoogleAuth;
 
   /**
@@ -87,7 +88,7 @@ class FirestoreVectorStore extends VectorStore {
       filter,
       distanceMeasure,
       firestoreConfig,
-      //googleAuth,
+      // googleAuth,
       ...asyncCallerArgs
     } = params;
     this.googleAuth = new GoogleAuth();
@@ -102,6 +103,7 @@ class FirestoreVectorStore extends VectorStore {
       ...firestoreConfig,
     });
   }
+
   _vectorstoreType(): string {
     return "GoogleFirestoreVectorStore";
   }
@@ -264,7 +266,7 @@ class FirestoreVectorStore extends VectorStore {
 
       for (const doc of querySnapshot.docs) {
         batch.delete(doc.ref);
-        batchCount++;
+        batchCount += 1;
 
         if (batchCount === BATCH_LIMIT) {
           await batch.commit();
@@ -297,7 +299,7 @@ class FirestoreVectorStore extends VectorStore {
       for (const id of ids) {
         const docRef = this.firestore.collection(this.collectionName).doc(id);
         batch.delete(docRef);
-        batchCount++;
+        batchCount += 1;
 
         if (batchCount === BATCH_LIMIT) {
           await batch.commit();
@@ -321,7 +323,8 @@ class FirestoreVectorStore extends VectorStore {
    * @param {Record<string, any>} filter - The filter to apply.
    * @returns {Promise<void>}
    */
-  async deleteDocumentsByFilter(filter: Record<string, any>): Promise<void> {
+
+  async deleteDocumentsByFilter(filter: Record<string, string>): Promise<void> {
     try {
       let query: FirebaseFirestore.Query<FirebaseFirestore.DocumentData> =
         this.firestore.collection(this.collectionName);
@@ -341,7 +344,7 @@ class FirestoreVectorStore extends VectorStore {
 
       for (const doc of querySnapshot.docs) {
         batch.delete(doc.ref);
-        batchCount++;
+        batchCount += 1;
 
         if (batchCount === BATCH_LIMIT) {
           await batch.commit();
@@ -368,7 +371,7 @@ class FirestoreVectorStore extends VectorStore {
    * @returns {Promise<Array<[DocumentInterface, number]>>} - The search results and their scores.
    */
   async similaritySearchVectorWithScore(
-    queryVector: number[],
+    query: number[],
     k: number,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filter?: Record<string, any>
@@ -401,7 +404,7 @@ class FirestoreVectorStore extends VectorStore {
       }
       const vectorQuery: VectorQuery = baseQuery.findNearest({
         vectorField: "embedding_field",
-        queryVector: queryVector,
+        queryVector: query,
         limit: k,
         distanceMeasure: this.distanceMeasure,
       });
