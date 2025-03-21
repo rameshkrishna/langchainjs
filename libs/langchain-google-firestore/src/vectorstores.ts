@@ -91,13 +91,13 @@ class FirestoreVectorStore extends VectorStore {
       // googleAuth,
       ...asyncCallerArgs
     } = params;
-    this.googleAuth = new GoogleAuth();
+
     this.textKey = textKey ?? "text";
     this.collectionName = collectionName;
     this.filter = filter;
     this.distanceMeasure = distanceMeasure ?? "EUCLIDEAN";
     this.caller = new AsyncCaller(asyncCallerArgs);
-
+    this.googleAuth = new GoogleAuth();
     this.firestore = new Firestore({
       auth: this.googleAuth,
       ...firestoreConfig,
@@ -193,7 +193,7 @@ class FirestoreVectorStore extends VectorStore {
     const metadata = {
       ...flattenedMetadata,
       ...stringArrays,
-      [this.textKey]: document.pageContent,
+      // [this.textKey]: document.pageContent, // Use textKey as the key for text content in metadata not reequired as to support document.pageContent
     };
 
     for (const key of Object.keys(metadata)) {
@@ -423,8 +423,9 @@ class FirestoreVectorStore extends VectorStore {
         const { [this.textKey]: pageContent, ...metadata } = res.metadata ?? {};
         return [
           new Document({
-            metadata,
             pageContent,
+            metadata,
+            id: res.id,
           }),
           1,
         ]; // Dummy score value
