@@ -44,8 +44,8 @@ interface FirestoreDocumentData {
   id: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata: Record<string, any>;
-  pageContent: string;
   embedding_field: FieldValue;
+  [key: string]: unknown; // allows custom text keys like "content" or "body"
 }
 
 class FirestoreVectorStore extends VectorStore {
@@ -92,12 +92,23 @@ class FirestoreVectorStore extends VectorStore {
       ...asyncCallerArgs
     } = params;
 
-    this.textKey = textKey ?? "text";
+    this.textKey = textKey ?? "pageContent";
     this.collectionName = collectionName;
     this.filter = filter;
     this.distanceMeasure = distanceMeasure ?? "EUCLIDEAN";
     this.caller = new AsyncCaller(asyncCallerArgs);
-    this.googleAuth = new GoogleAuth();
+    // Check for GOOGLE_APPLICATION_CREDENTIALS
+    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (!credentialsPath) {
+      throw new Error(
+        "Environment variable GOOGLE_APPLICATION_CREDENTIALS is not set. Firestore client cannot be initialized."
+      );
+    }
+
+    this.googleAuth = new GoogleAuth({
+      keyFilename: credentialsPath,
+    });
+
     this.firestore = new Firestore({
       auth: this.googleAuth,
       ...firestoreConfig,
@@ -193,7 +204,7 @@ class FirestoreVectorStore extends VectorStore {
     const metadata = {
       ...flattenedMetadata,
       ...stringArrays,
-      // [this.textKey]: document.pageContent, // Use textKey as the key for text content in metadata not reequired as to support document.pageContent
+      // [this.textKey]: document.pageContent, // not reequired as to support document.pageContent
     };
 
     for (const key of Object.keys(metadata)) {
@@ -210,7 +221,7 @@ class FirestoreVectorStore extends VectorStore {
     return {
       id,
       metadata,
-      pageContent: document.pageContent,
+      [this.textKey]: document.pageContent,
       embedding_field: FieldValue.vector(values),
     };
   }
@@ -420,12 +431,14 @@ class FirestoreVectorStore extends VectorStore {
       // const results = querySnapshot.docs.map((doc) => doc.data());
 
       return results.map((res) => {
-        const { [this.textKey]: pageContent, ...metadata } = res.metadata ?? {};
+        const pageContent = res[this.textKey];
+        const metadata = res.metadata ?? {};
+        const id = res.id;
         return [
           new Document({
             pageContent,
             metadata,
-            id: res.id,
+            id,
           }),
           1,
         ]; // Dummy score value
@@ -449,10 +462,11 @@ class FirestoreVectorStore extends VectorStore {
         return null;
       }
       const data = doc.data();
-      console.log(data);
+      // console.log(data);
       return new Document({
+        id: doc.id,
         metadata: data?.metadata,
-        pageContent: data?.pageContent,
+        pageContent: data?.[this.textKey] ?? data?.pageContent,
       });
     } catch (error) {
       console.error("Error getting document by ID:", error);
@@ -482,8 +496,9 @@ class FirestoreVectorStore extends VectorStore {
       return querySnapshot.docs.map((doc) => {
         const data = doc.data();
         return new Document({
-          metadata: data.metadata,
-          pageContent: data.pageContent,
+          id: doc.id,
+          metadata: data?.metadata,
+          pageContent: data?.[this.textKey] ?? data?.pageContent,
         });
       });
     } catch (error) {
