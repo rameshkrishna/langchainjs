@@ -31,7 +31,7 @@ describe("FirestoreVectorStore Integration Tests", () => {
   let embeddings: SyntheticEmbeddings;
 
   beforeAll(async () => {
-    // Initialize real Firestore client
+    // Initialize real Firestore client to verify directly on firebase
     const auth = new GoogleAuth();
     firestore = new Firestore({
       auth,

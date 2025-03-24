@@ -449,7 +449,7 @@ class FirestoreVectorStore extends VectorStore {
             id,
           }),
           res.vector_distance as number,
-        ]; // Dummy score value
+        ];
       }) as [DocumentInterface, number][];
     } catch (error) {
       console.error("Error performing similarity search:", error);
