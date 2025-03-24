@@ -91,19 +91,20 @@ describe("FirestoreVectorStore Integration Tests", () => {
     const retrievedDocs = await Promise.all(
       ids.map((id) => store.getDocumentById(id))
     );
-
+    console.log(retrievedDocs);
     expect(retrievedDocs.every((doc) => doc !== null)).toBe(true);
   });
 
-  // test("should perform similarity search", async () => {
-  //   await store.addDocuments(TEST_DOCUMENTS);
-  //   const queryVector = await embeddings.embedQuery("fruit");
+  test("should perform similarity search", async () => {
+    await store.addDocuments(TEST_DOCUMENTS);
+    const queryVector = await embeddings.embedQuery("fruit");
 
-  //   const results = await store.similaritySearchVectorWithScore(queryVector, 2);
-
-  //   expect(results).toHaveLength(2);
-  //   expect(results[0][0].pageContent).toMatch(/apple|banana/);
-  // });
+    const results = await store.similaritySearchVectorWithScore(queryVector, 2);
+    console.log(results);
+    console.log(results[0][0].metadata);
+    expect(results).toHaveLength(2);
+    expect(results[0][0].pageContent).toMatch(/apple|banana/);
+  });
 
   test("should delete documents by IDs", async () => {
     const ids = await store.addDocuments(TEST_DOCUMENTS);

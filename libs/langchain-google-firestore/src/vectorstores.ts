@@ -21,6 +21,7 @@ import { GoogleAuth } from "google-auth-library";
 export interface FirebaseStoreParams extends AsyncCallerParams {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   firestoreConfig?: FirebaseFirestore.Settings;
+  firestoreClient?: Firestore;
   collectionName: string;
   textKey?: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,6 +89,7 @@ class FirestoreVectorStore extends VectorStore {
       filter,
       distanceMeasure,
       firestoreConfig,
+      firestoreClient,
       // googleAuth,
       ...asyncCallerArgs
     } = params;
@@ -97,22 +99,26 @@ class FirestoreVectorStore extends VectorStore {
     this.filter = filter;
     this.distanceMeasure = distanceMeasure ?? "EUCLIDEAN";
     this.caller = new AsyncCaller(asyncCallerArgs);
-    // Check for GOOGLE_APPLICATION_CREDENTIALS
-    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    if (!credentialsPath) {
-      throw new Error(
-        "Environment variable GOOGLE_APPLICATION_CREDENTIALS is not set. Firestore client cannot be initialized."
-      );
+
+    if (firestoreClient) {
+      this.firestore = firestoreClient;
+    } else {
+      // Check for GOOGLE_APPLICATION_CREDENTIALS
+      const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      if (!credentialsPath) {
+        throw new Error(
+          "Environment variable GOOGLE_APPLICATION_CREDENTIALS is not set. Firestore client cannot be initialized."
+        );
+      }
+      this.googleAuth = new GoogleAuth({
+        keyFilename: credentialsPath,
+      });
+
+      this.firestore = new Firestore({
+        auth: this.googleAuth,
+        ...firestoreConfig,
+      });
     }
-
-    this.googleAuth = new GoogleAuth({
-      keyFilename: credentialsPath,
-    });
-
-    this.firestore = new Firestore({
-      auth: this.googleAuth,
-      ...firestoreConfig,
-    });
   }
 
   _vectorstoreType(): string {
@@ -418,10 +424,12 @@ class FirestoreVectorStore extends VectorStore {
         queryVector: query,
         limit: k,
         distanceMeasure: this.distanceMeasure,
+        distanceResultField: "vector_distance",
       });
 
       const vectorQuerySnapshot: VectorQuerySnapshot = await vectorQuery.get();
       const results = vectorQuerySnapshot.docs.map((doc) => doc.data());
+
       // const vectorQuery = baseQuery.findNearest("embedding_field", query, {
       //   limit: k,
       //   distanceMeasure: this.distanceMeasure,
@@ -440,7 +448,7 @@ class FirestoreVectorStore extends VectorStore {
             metadata,
             id,
           }),
-          1,
+          res.vector_distance as number,
         ]; // Dummy score value
       }) as [DocumentInterface, number][];
     } catch (error) {
