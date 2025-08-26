@@ -65,7 +65,7 @@ describe("FirestoreVectorStore", () => {
         expect(updatedDocument).toEqual(
           new Document({
             id: documentId,
-            metadata: { id: documentId },
+            metadata: {},
             pageContent: `${pageContent} upserted`,
           })
         );
@@ -87,7 +87,7 @@ describe("FirestoreVectorStore", () => {
         expect(storedDocument).toEqual(
           new Document({
             id: ids[0],
-            metadata: { foo: "bar", id: ids[0] },
+            metadata: { foo: "bar" },
             pageContent,
           })
         );
@@ -159,7 +159,7 @@ describe("FirestoreVectorStore", () => {
           expect(doc?.pageContent).toEqual(`Batch document ${index + 1}`);
           expect(doc?.metadata.batchId).toEqual("test-batch");
           expect(doc?.metadata.index).toEqual(index);
-          expect(doc?.metadata.id).toBeDefined();
+          expect(doc?.id).toBeDefined();
         });
       });
 
@@ -218,7 +218,7 @@ describe("FirestoreVectorStore", () => {
         expect(storedDocument).toEqual(
           new Document({
             id: documentId,
-            metadata: { id: documentId },
+            metadata: {},
             pageContent,
           })
         );
@@ -240,7 +240,7 @@ describe("FirestoreVectorStore", () => {
         expect(document).toEqual(
           new Document({
             id: documentId,
-            metadata: { id: documentId },
+            metadata: {},
             pageContent,
           })
         );
@@ -258,7 +258,7 @@ describe("FirestoreVectorStore", () => {
         expect(documents[0].metadata).toMatchObject({
           queryTest: "unique-metadata-test",
         });
-        expect(documents[0].metadata.id).toBeDefined();
+        expect(documents[0].id).toBeDefined();
         expect(documents[0].pageContent).toBe(pageContent);
       });
 

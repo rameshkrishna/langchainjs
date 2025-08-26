@@ -227,7 +227,7 @@ class FirestoreVectorStore extends VectorStore {
     const metadata = {
       ...flattenedMetadata,
       ...stringArrays,
-      id, // lets think about it
+      //id, // lets think about it
     };
 
     for (const key of Object.keys(metadata)) {
