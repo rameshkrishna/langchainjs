@@ -227,7 +227,7 @@ class FirestoreVectorStore extends VectorStore {
     const metadata = {
       ...flattenedMetadata,
       ...stringArrays,
-      //id, // lets think about it
+      // id, // lets think about it
     };
 
     for (const key of Object.keys(metadata)) {
@@ -397,23 +397,35 @@ class FirestoreVectorStore extends VectorStore {
   }
 
   /**
-   * Performs a similarity search based on vector distance.
-   * @param {number[]} query - The query vector.
+   * Enhanced helper function for performing all types of similarity search operations.
+   * @param {number[] | string} query - The query vector or text.
    * @param {number} k - The number of nearest neighbors to retrieve.
-   * @param {Object} [filter] - A filter to apply to the search.
-   * @returns {Promise<Array<[DocumentInterface, number]>>} - The search results and their scores.
+   * @param {Record<string, any>} [filter] - A filter to apply to the search.
+   * @param {boolean} [withScores=false] - Whether to return scores with documents.
+   * @param {boolean} [withEmbeddings=false] - Whether to include embeddings in the results.
+   * @returns {Promise<DocumentInterface[] | Array<[DocumentInterface, number]> | Array<[DocumentInterface, number, number[]]>>} - The search results.
    */
-  async similaritySearchVectorWithScore(
-    query: number[],
+  private async _similarity_search(
+    query: number[] | string,
     k: number,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    filter?: Record<string, any>
-  ): Promise<[DocumentInterface, number][]> {
+    filter?: Record<string, any>,
+    withScores: boolean = false,
+    withEmbeddings: boolean = false
+  ): Promise<DocumentInterface[] | Array<[DocumentInterface, number]> | Array<[DocumentInterface, number, number[]]>> {
     try {
       if (filter && this.filter) {
         throw new Error("Cannot provide both `filter` and `this.filter`");
       }
       const _filter = filter ?? this.filter;
+
+      // Handle string queries by converting to vectors
+      let queryVector: number[];
+      if (typeof query === 'string') {
+        queryVector = await this.embeddings.embedQuery(query);
+      } else {
+        queryVector = query;
+      }
 
       const coll = this.firestore.collection(this.collectionName);
 
@@ -427,29 +439,59 @@ class FirestoreVectorStore extends VectorStore {
 
       const vectorQuery: VectorQuery = baseQuery.findNearest({
         vectorField: "embedding_field",
-        queryVector: query,
+        queryVector: queryVector,
         limit: k,
         distanceMeasure: this.distanceMeasure,
         distanceResultField: "vector_distance",
       });
 
       const querySnapshot: VectorQuerySnapshot = await vectorQuery.get();
-      const results = querySnapshot.docs.map((doc) => doc.data());
 
-      return results.map((res) => {
-        return [
-          new Document({
-            id: res?.id,
-            metadata: res.metadata || {},
-            pageContent: res.pageContent || "",
-          }),
-          res.vector_distance,
-        ];
-      }) as [DocumentInterface, number][];
+      // Convert results to the desired format
+      const results = querySnapshot.docs.map((doc) => {
+        const data = doc.data();
+        const document = new Document({
+          id: data?.id,
+          metadata: data?.metadata || {},
+          pageContent: data?.pageContent || "",
+        });
+        
+        if (withEmbeddings) {
+          const storedEmbedding = this._vectorToArray(data?.embedding_field);
+          return [document, data.vector_distance, storedEmbedding] as [DocumentInterface, number, number[]];
+        } else {
+          return [document, data.vector_distance] as [DocumentInterface, number];
+        }
+      });
+
+      if (withEmbeddings) {
+        return results;
+      } else if (withScores) {
+        return results;
+      } else {
+        return results.map(([doc]) => doc);
+      }
     } catch (error) {
       console.error("Error performing similarity search:", error);
       throw new Error("Failed to perform similarity search.");
     }
+  }
+
+
+  /**
+   * Performs a similarity search based on vector distance.
+   * @param {number[]} query - The query vector.
+   * @param {number} k - The number of nearest neighbors to retrieve.
+   * @param {Object} [filter] - A filter to apply to the search.
+   * @returns {Promise<Array<[DocumentInterface, number]>>} - The search results and their scores.
+   */
+  async similaritySearchVectorWithScore(
+    query: number[],
+    k: number,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    filter?: Record<string, any>
+  ): Promise<[DocumentInterface, number][]> {
+    return this._similarity_search(query, k, filter, true) as Promise<[DocumentInterface, number][]>;
   }
 
   /**
@@ -547,20 +589,9 @@ class FirestoreVectorStore extends VectorStore {
   async similaritySearch(
     query: string,
     options?: SearchOptions,
-    k = 4
+    k: number = 4
   ): Promise<DocumentInterface[]> {
-    try {
-      const queryVector = await this.embeddings.embedQuery(query);
-      const results = await this.similaritySearchVectorWithScore(
-        queryVector,
-        k,
-        options?.filter
-      );
-      return results.map(([doc]) => doc);
-    } catch (error) {
-      console.error("Error performing similarity search:", error);
-      throw new Error("Failed to perform similarity search.");
-    }
+    return this._similarity_search(query, k, options?.filter) as Promise<DocumentInterface[]>;
   }
 
   /**
@@ -575,17 +606,7 @@ class FirestoreVectorStore extends VectorStore {
     k = 4,
     options?: SearchOptions
   ): Promise<DocumentInterface[]> {
-    try {
-      const results = await this.similaritySearchVectorWithScore(
-        embedding,
-        k,
-        options?.filter
-      );
-      return results.map(([doc]) => doc);
-    } catch (error) {
-      console.error("Error performing similarity search by vector:", error);
-      throw new Error("Failed to perform similarity search by vector.");
-    }
+    return this._similarity_search(embedding, k, options?.filter) as Promise<DocumentInterface[]>;
   }
 
   /**
@@ -631,73 +652,44 @@ class FirestoreVectorStore extends VectorStore {
         filter,
       } = options || {};
 
-      // Get more documents than needed for MMR calculation
-      const searchResults = await this.similaritySearchVectorWithScore(
+      // Get more documents than needed for MMR calculation with embeddings
+      const searchResultsWithEmbeddings = await this._similarity_search(
         embedding,
         fetchK,
-        filter
-      );
+        filter,
+        true,
+        true
+      ) as Array<[DocumentInterface, number, number[]]>;
 
-      if (searchResults.length === 0) {
+      if (searchResultsWithEmbeddings.length === 0) {
         return [];
       }
 
-      // Extract embeddings from stored documents
+      // Extract embeddings and documents from search results
       const candidateEmbeddings: number[][] = [];
       const candidateDocs: DocumentInterface[] = [];
 
-      // Try to retrieve stored embeddings
-      for (const [doc] of searchResults) {
+      for (const [doc, , embeddingVector] of searchResultsWithEmbeddings) {
         candidateDocs.push(doc);
-
-        // Attempt to retrieve the stored embedding from Firestore
-        try {
-          const docId = doc.metadata?.id;
-          if (docId) {
-            const docRef = this.firestore
-              .collection(this.collectionName)
-              .doc(docId);
-            const docSnap = await docRef.get();
-            if (docSnap.exists) {
-              const docData = docSnap.data();
-              const storedEmbedding = this._vectorToArray(
-                docData?.embedding_field
-              );
-              if (storedEmbedding.length > 0) {
-                candidateEmbeddings.push(storedEmbedding);
-              } else {
-                // Fallback: re-embed the document text
-                const docEmbedding = await this.embeddings.embedQuery(
-                  doc.pageContent
-                );
-                candidateEmbeddings.push(docEmbedding);
-              }
-            } else {
-              // Fallback: re-embed the document text
-              const docEmbedding = await this.embeddings.embedQuery(
-                doc.pageContent
-              );
-              candidateEmbeddings.push(docEmbedding);
-            }
-          } else {
-            // Fallback: re-embed the document text
-            const docEmbedding = await this.embeddings.embedQuery(
-              doc.pageContent
-            );
+        
+        if (embeddingVector && embeddingVector.length > 0) {
+          candidateEmbeddings.push(embeddingVector);
+        } else {
+          // Fallback: re-embed the document text if embedding is missing or empty
+          try {
+            const docEmbedding = await this.embeddings.embedQuery(doc.pageContent);
             candidateEmbeddings.push(docEmbedding);
+          } catch (error) {
+            console.warn(`Failed to re-embed document ${doc.id}:`, error);
+            // Skip this document if we can't get its embedding
+            continue;
           }
-        } catch (error) {
-          // Fallback: re-embed the document text
-          const docEmbedding = await this.embeddings.embedQuery(
-            doc.pageContent
-          );
-          candidateEmbeddings.push(docEmbedding);
         }
       }
 
       // If we still can't get embeddings, fall back to simple similarity search
       if (candidateEmbeddings.length === 0) {
-        return searchResults.slice(0, k).map(([doc]) => doc);
+        return searchResultsWithEmbeddings.slice(0, k).map(([doc]) => doc);
       }
 
       // Calculate MMR indices

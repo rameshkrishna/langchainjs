@@ -1315,22 +1315,16 @@ describe("FirestoreVectorStore Unit Tests", () => {
     });
 
     test("should handle embedQuery for similarity search", async () => {
-      const embedQuerySpy = jest.spyOn(embeddings, 'embedQuery');
-      const searchSpy = jest.spyOn(firestoreVectorStore, 'similaritySearchVectorWithScore');
+      const searchSpy = jest.spyOn(firestoreVectorStore as any, '_similarity_search');
       
-      embedQuerySpy.mockResolvedValue([0.1, 0.2, 0.3]);
-      searchSpy.mockResolvedValue([
-        [new Document({ pageContent: 'Result', metadata: {} }), 0.8],
-      ]);
+      searchSpy.mockResolvedValue([new Document({ pageContent: 'Result', metadata: {} })]);
 
       const results = await firestoreVectorStore.similaritySearch("test query", undefined, 1);
 
-      expect(embedQuerySpy).toHaveBeenCalledWith("test query");
-      expect(searchSpy).toHaveBeenCalledWith([0.1, 0.2, 0.3], 1, undefined);
+      expect(searchSpy).toHaveBeenCalledWith("test query", 1, undefined);
       expect(results).toHaveLength(1);
       expect(results[0]).toBeInstanceOf(Document);
 
-      embedQuerySpy.mockRestore();
       searchSpy.mockRestore();
     });
   });

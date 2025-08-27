@@ -32,11 +32,10 @@ describe("FirestoreVectorStore", () => {
   });
 
   afterEach(async () => {
-    // jest.clearAllMocks();
     // Clean up test data after each test for better isolation
-    // await firestoreVectorStore.delete({
-    //   deleteAll: true,
-    // });
+    await firestoreVectorStore.delete({
+      deleteAll: true,
+    });
   });
 
   describe("Document Operations", () => {
