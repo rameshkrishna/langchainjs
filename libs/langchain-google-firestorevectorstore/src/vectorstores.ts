@@ -4,6 +4,8 @@ import {
   FieldValue,
   VectorQuery,
   VectorQuerySnapshot,
+  CollectionReference,
+  Query,
 } from "@google-cloud/firestore";
 // eslint-disable-next-line import/no-extraneous-dependencies
 import * as uuid from "uuid";
@@ -14,6 +16,7 @@ import {
   AsyncCaller,
   AsyncCallerParams,
 } from "@langchain/core/utils/async_caller";
+import type { Callbacks } from "@langchain/core/callbacks/manager";
 import { maximalMarginalRelevance } from "@langchain/core/utils/math";
 import { flatten } from "flat";
 import { GoogleAuth } from "google-auth-library";
@@ -34,10 +37,11 @@ interface AddDocumentsOptions {
 
 interface AddTextsOptions {
   ids?: string[];
-  metadatas?: object[];
+  metadatas?: object[] | object;
 }
 
 interface SearchOptions {
+  k?: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   filter?: Record<string, any>;
 }
@@ -110,36 +114,91 @@ class FirestoreVectorStore extends VectorStore {
     this.firestore = new Firestore({ googleAuth, ...firestoreConfig });
   }
 
+  _vectorstoreType(): string {
+    return "FirestoreVectorStore";
+  }
+
   /**
-   * Initializes Firestore with Google Auth Library
-   * @param {FirebaseFirestore.Settings} firestoreConfig - Firestore configuration settings.
+   * Helper method for batch processing operations with consistent error handling.
+   * @param {T[]} items - Items to process in batches.
+   * @param {(batch: FirebaseFirestore.WriteBatch, item: T) => void} processor - Function to process each item.
+   * @param {number} batchLimit - Maximum items per batch.
    */
-  async initializeFirestore(
-    firestoreConfig?: FirebaseFirestore.Settings
+  private async _processBatch<T>(
+    items: T[],
+    processor: (batch: FirebaseFirestore.WriteBatch, item: T) => void,
+    batchLimit: number = 500
   ): Promise<void> {
-    try {
-      const auth = new GoogleAuth({
-        scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-      });
+    let batch = this.firestore.batch();
+    let batchCount = 0;
 
-      const client = await auth.getClient();
-      const projectId = await auth.getProjectId();
+    for (const item of items) {
+      processor(batch, item);
+      batchCount += 1;
 
-      // console.log(client.credentials, projectId);
+      if (batchCount === batchLimit) {
+        await batch.commit();
+        batch = this.firestore.batch();
+        batchCount = 0;
+      }
+    }
 
-      this.firestore = new Firestore({
-        ...firestoreConfig,
-        projectId,
-        authClient: client,
-      });
-    } catch (error) {
-      console.error("Error initializing Firestore:", error);
-      throw new Error("Failed to initialize Firestore with Google Auth.");
+    // Commit any remaining writes
+    if (batchCount > 0) {
+      await batch.commit();
     }
   }
 
-  _vectorstoreType(): string {
-    return "FirestoreVectorStore";
+  /**
+   * Helper method to create Document instances from Firestore data.
+   * @param {FirebaseFirestore.DocumentData | undefined} data - Firestore document data.
+   * @returns {DocumentInterface} - Created document instance.
+   */
+  private _createDocumentFromData(
+    data: FirebaseFirestore.DocumentData | undefined
+  ): DocumentInterface {
+    return new Document({
+      id: data?.id,
+      metadata: data?.metadata || {},
+      pageContent: data?.pageContent || "",
+    });
+  }
+
+  /**
+   * Helper method to normalize filter field names.
+   * @param {string} key - The filter key.
+   * @returns {string} - Normalized field name.
+   */
+  private _normalizeFilterField(key: string): string {
+    return key.startsWith("metadata.") ? key : `metadata.${key}`;
+  }
+
+  /**
+   * Helper method for consistent error handling.
+   * @param {string} operation - The operation that failed.
+   * @param {unknown} error - The error that occurred.
+   * @throws {Error} - Always throws a standardized error.
+   */
+  private _handleError(operation: string, error: unknown): never {
+    console.error(`Error ${operation}:`, error);
+    throw new Error(`Failed to ${operation}.`);
+  }
+
+  /**
+   * Helper method to validate search parameters.
+   * @param {number} k - Number of results to return.
+   * @param {Record<string, any>} [filter] - Optional filter.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _validateSearchParams(k: number, filter?: Record<string, any>): void {
+    if (k <= 0) {
+      throw new Error("Parameter 'k' must be a positive number");
+    }
+    if (filter && this.filter) {
+      throw new Error(
+        "Cannot provide both 'filter' parameter and instance filter"
+      );
+    }
   }
 
   /**
@@ -153,13 +212,16 @@ class FirestoreVectorStore extends VectorStore {
     options?: AddDocumentsOptions
   ): Promise<string[]> {
     try {
+      if (!documents.length) {
+        return [];
+      }
+
       const texts = documents.map(({ pageContent }) => pageContent);
       const vectors = await this.embeddings.embedDocuments(texts);
 
       return this.addVectors(vectors, documents, options);
     } catch (error) {
-      console.error("Error adding documents:", error);
-      throw new Error("Failed to add documents to Firestore.");
+      this._handleError("add documents to Firestore", error);
     }
   }
 
@@ -176,6 +238,12 @@ class FirestoreVectorStore extends VectorStore {
     options?: AddDocumentsOptions
   ): Promise<string[]> {
     try {
+      if (vectors.length !== documents.length) {
+        throw new Error(
+          "Vectors and documents arrays must have the same length"
+        );
+      }
+
       const ids = options?.ids;
       const documentIds = ids ?? documents.map(() => uuid.v4());
 
@@ -191,8 +259,7 @@ class FirestoreVectorStore extends VectorStore {
       await Promise.all(batchRequests);
       return documentIds;
     } catch (error) {
-      console.error("Error adding vectors:", error);
-      throw new Error("Failed to add vectors to Firestore.");
+      this._handleError("add vectors to Firestore", error);
     }
   }
 
@@ -227,7 +294,6 @@ class FirestoreVectorStore extends VectorStore {
     const metadata = {
       ...flattenedMetadata,
       ...stringArrays,
-      // id, // lets think about it
     };
 
     for (const key of Object.keys(metadata)) {
@@ -240,7 +306,6 @@ class FirestoreVectorStore extends VectorStore {
       }
     }
 
-    // console.log(FieldValue.vector(values));
     return {
       id,
       metadata,
@@ -255,13 +320,15 @@ class FirestoreVectorStore extends VectorStore {
    * @param {FirestoreDocumentData} docData - The document data.
    * @returns {Promise<void>}
    */
-  async setDocData(id: string, docData: FirestoreDocumentData): Promise<void> {
+  protected async setDocData(
+    id: string,
+    docData: FirestoreDocumentData
+  ): Promise<void> {
     try {
       const docRef = this.firestore.collection(this.collectionName).doc(id);
       await docRef.set(docData);
     } catch (error) {
-      console.error("Error setting document data:", error);
-      throw new Error("Failed to set document data in Firestore.");
+      this._handleError("set document data in Firestore", error);
     }
   }
 
@@ -293,29 +360,12 @@ class FirestoreVectorStore extends VectorStore {
       const querySnapshot = await this.firestore
         .collection(this.collectionName)
         .get();
-      const BATCH_LIMIT = 500;
 
-      let batch = this.firestore.batch();
-      let batchCount = 0;
-
-      for (const doc of querySnapshot.docs) {
-        batch.delete(doc.ref);
-        batchCount++;
-
-        if (batchCount === BATCH_LIMIT) {
-          await batch.commit();
-          batch = this.firestore.batch();
-          batchCount = 0;
-        }
-      }
-
-      // Commit any remaining writes
-      if (batchCount > 0) {
-        await batch.commit();
-      }
+      await this._processBatch(querySnapshot.docs, (batch, doc) =>
+        batch.delete(doc.ref)
+      );
     } catch (error) {
-      console.error("Error deleting all documents:", error);
-      throw new Error("Failed to delete all documents from Firestore.");
+      this._handleError("delete all documents from Firestore", error);
     }
   }
 
@@ -326,29 +376,12 @@ class FirestoreVectorStore extends VectorStore {
    */
   async deleteDocumentsByIds(ids: string[]): Promise<void> {
     try {
-      const BATCH_LIMIT = 500;
-      let batch = this.firestore.batch();
-      let batchCount = 0;
-
-      for (const id of ids) {
+      await this._processBatch(ids, (batch, id) => {
         const docRef = this.firestore.collection(this.collectionName).doc(id);
         batch.delete(docRef);
-        batchCount++;
-
-        if (batchCount === BATCH_LIMIT) {
-          await batch.commit();
-          batch = this.firestore.batch();
-          batchCount = 0;
-        }
-      }
-
-      // Commit any remaining writes
-      if (batchCount > 0) {
-        await batch.commit();
-      }
+      });
     } catch (error) {
-      console.error("Error deleting documents by IDs:", error);
-      throw new Error("Failed to delete documents by IDs from Firestore.");
+      this._handleError("delete documents by IDs from Firestore", error);
     }
   }
 
@@ -357,6 +390,7 @@ class FirestoreVectorStore extends VectorStore {
    * @param {Record<string, any>} filter - The filter to apply.
    * @returns {Promise<void>}
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async deleteDocumentsByFilter(filter: Record<string, any>): Promise<void> {
     try {
       let query: FirebaseFirestore.Query<FirebaseFirestore.DocumentData> =
@@ -364,35 +398,16 @@ class FirestoreVectorStore extends VectorStore {
 
       for (const key of Object.keys(filter)) {
         const value = filter[key];
-        // Use dot notation for nested fields in metadata if needed
-        const field = key.startsWith("metadata.") ? key : `metadata.${key}`;
+        const field = this._normalizeFilterField(key);
         query = query.where(field, "==", value);
       }
 
       const querySnapshot = await query.get();
-      const BATCH_LIMIT = 500;
-
-      let batch = this.firestore.batch();
-      let batchCount = 0;
-
-      for (const doc of querySnapshot.docs) {
-        batch.delete(doc.ref);
-        batchCount++;
-
-        if (batchCount === BATCH_LIMIT) {
-          await batch.commit();
-          batch = this.firestore.batch();
-          batchCount = 0;
-        }
-      }
-
-      // Commit any remaining writes
-      if (batchCount > 0) {
-        await batch.commit();
-      }
+      await this._processBatch(querySnapshot.docs, (batch, doc) =>
+        batch.delete(doc.ref)
+      );
     } catch (error) {
-      console.error("Error deleting documents by filter:", error);
-      throw new Error("Failed to delete documents by filter from Firestore.");
+      this._handleError("delete documents by filter from Firestore", error);
     }
   }
 
@@ -412,16 +427,18 @@ class FirestoreVectorStore extends VectorStore {
     filter?: Record<string, any>,
     withScores: boolean = false,
     withEmbeddings: boolean = false
-  ): Promise<DocumentInterface[] | Array<[DocumentInterface, number]> | Array<[DocumentInterface, number, number[]]>> {
+  ): Promise<
+    | DocumentInterface[]
+    | Array<[DocumentInterface, number]>
+    | Array<[DocumentInterface, number, number[]]>
+  > {
     try {
-      if (filter && this.filter) {
-        throw new Error("Cannot provide both `filter` and `this.filter`");
-      }
+      this._validateSearchParams(k, filter);
       const _filter = filter ?? this.filter;
 
       // Handle string queries by converting to vectors
       let queryVector: number[];
-      if (typeof query === 'string') {
+      if (typeof query === "string") {
         queryVector = await this.embeddings.embedQuery(query);
       } else {
         queryVector = query;
@@ -430,7 +447,7 @@ class FirestoreVectorStore extends VectorStore {
       const coll = this.firestore.collection(this.collectionName);
 
       // Pre-filtering: Apply filters before vector search (requires composite vector index)
-      let baseQuery = coll;
+      let baseQuery: CollectionReference | Query = coll;
       if (_filter) {
         for (const key of Object.keys(_filter)) {
           baseQuery = baseQuery.where(key, "==", _filter[key]);
@@ -439,7 +456,7 @@ class FirestoreVectorStore extends VectorStore {
 
       const vectorQuery: VectorQuery = baseQuery.findNearest({
         vectorField: "embedding_field",
-        queryVector: queryVector,
+        queryVector,
         limit: k,
         distanceMeasure: this.distanceMeasure,
         distanceResultField: "vector_distance",
@@ -450,33 +467,34 @@ class FirestoreVectorStore extends VectorStore {
       // Convert results to the desired format
       const results = querySnapshot.docs.map((doc) => {
         const data = doc.data();
-        const document = new Document({
-          id: data?.id,
-          metadata: data?.metadata || {},
-          pageContent: data?.pageContent || "",
-        });
-        
+        const document = this._createDocumentFromData(data);
+
         if (withEmbeddings) {
           const storedEmbedding = this._vectorToArray(data?.embedding_field);
-          return [document, data.vector_distance, storedEmbedding] as [DocumentInterface, number, number[]];
+          return [document, data.vector_distance, storedEmbedding] as [
+            DocumentInterface,
+            number,
+            number[]
+          ];
         } else {
-          return [document, data.vector_distance] as [DocumentInterface, number];
+          return [document, data.vector_distance] as [
+            DocumentInterface,
+            number
+          ];
         }
       });
 
       if (withEmbeddings) {
-        return results;
+        return results as Array<[DocumentInterface, number, number[]]>;
       } else if (withScores) {
-        return results;
+        return results as Array<[DocumentInterface, number]>;
       } else {
-        return results.map(([doc]) => doc);
+        return results.map(([doc]) => doc) as DocumentInterface[];
       }
     } catch (error) {
-      console.error("Error performing similarity search:", error);
-      throw new Error("Failed to perform similarity search.");
+      this._handleError("perform similarity search", error);
     }
   }
-
 
   /**
    * Performs a similarity search based on vector distance.
@@ -491,7 +509,9 @@ class FirestoreVectorStore extends VectorStore {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filter?: Record<string, any>
   ): Promise<[DocumentInterface, number][]> {
-    return this._similarity_search(query, k, filter, true) as Promise<[DocumentInterface, number][]>;
+    return this._similarity_search(query, k, filter, true) as Promise<
+      [DocumentInterface, number][]
+    >;
   }
 
   /**
@@ -506,16 +526,10 @@ class FirestoreVectorStore extends VectorStore {
       if (!doc.exists) {
         return null;
       }
-      const data = doc.data();
-      // console.log(data);
-      return new Document({
-        id: data?.id,
-        metadata: data?.metadata || {},
-        pageContent: data?.pageContent || "",
-      });
+      const data: FirebaseFirestore.DocumentData | undefined = doc.data();
+      return this._createDocumentFromData(data);
     } catch (error) {
-      console.error("Error getting document by ID:", error);
-      throw new Error("Failed to get document by ID from Firestore.");
+      this._handleError("get document by ID from Firestore", error);
     }
   }
 
@@ -533,22 +547,16 @@ class FirestoreVectorStore extends VectorStore {
         this.firestore.collection(this.collectionName);
       for (const key of Object.keys(filter)) {
         const value = filter[key];
-        // Use dot notation for nested fields in metadata
-        const field = key.startsWith("metadata.") ? key : `metadata.${key}`;
+        const field = this._normalizeFilterField(key);
         query = query.where(field, "==", value);
       }
       const querySnapshot = await query.get();
       return querySnapshot.docs.map((doc) => {
         const data = doc.data();
-        return new Document({
-          id: data?.id,
-          metadata: data?.metadata || {},
-          pageContent: data?.pageContent || "",
-        });
+        return this._createDocumentFromData(data);
       });
     } catch (error) {
-      console.error("Error getting documents by metadata:", error);
-      throw new Error("Failed to get documents by metadata from Firestore.");
+      this._handleError("get documents by metadata from Firestore", error);
     }
   }
 
@@ -563,6 +571,10 @@ class FirestoreVectorStore extends VectorStore {
     options?: AddTextsOptions
   ): Promise<string[]> {
     try {
+      if (!texts.length) {
+        return [];
+      }
+
       const { metadatas = [], ids } = options || {};
 
       const documents = texts.map((text, index) => ({
@@ -574,8 +586,7 @@ class FirestoreVectorStore extends VectorStore {
 
       return this.addDocuments(documents, { ids });
     } catch (error) {
-      console.error("Error adding texts:", error);
-      throw new Error("Failed to add texts to Firestore.");
+      this._handleError("add texts to Firestore", error);
     }
   }
 
@@ -588,10 +599,27 @@ class FirestoreVectorStore extends VectorStore {
    */
   async similaritySearch(
     query: string,
-    options?: SearchOptions,
-    k: number = 4
+    kOrOptions?: number | SearchOptions,
+    filter?: this["FilterType"],
+    _callbacks?: Callbacks
   ): Promise<DocumentInterface[]> {
-    return this._similarity_search(query, k, options?.filter) as Promise<DocumentInterface[]>;
+    // Handle both old and new parameter patterns for compatibility
+    let k = 4;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let actualFilter;
+
+    if (typeof kOrOptions === "number") {
+      k = kOrOptions;
+      actualFilter = typeof filter === "object" ? filter : undefined;
+    } else if (typeof kOrOptions === "object" && kOrOptions !== null) {
+      k = kOrOptions.k || 4;
+      actualFilter =
+        kOrOptions.filter || (typeof filter === "object" ? filter : undefined);
+    }
+
+    return this._similarity_search(query, k, actualFilter) as Promise<
+      DocumentInterface[]
+    >;
   }
 
   /**
@@ -601,12 +629,15 @@ class FirestoreVectorStore extends VectorStore {
    * @param {SearchOptions} options - Search options including filters.
    * @returns {Promise<DocumentInterface[]>} - The search results.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async similaritySearchByVector(
     embedding: number[],
-    k = 4,
-    options?: SearchOptions
+    options?: SearchOptions,
+    k = 4
   ): Promise<DocumentInterface[]> {
-    return this._similarity_search(embedding, k, options?.filter) as Promise<DocumentInterface[]>;
+    return this._similarity_search(embedding, k, options?.filter) as Promise<
+      DocumentInterface[]
+    >;
   }
 
   /**
@@ -618,12 +649,12 @@ class FirestoreVectorStore extends VectorStore {
    */
   async maxMarginalRelevanceSearchQuery(
     query: string,
-    k = 4,
-    options?: MaxMarginalRelevanceSearchOptions
+    options?: MaxMarginalRelevanceSearchOptions,
+    k = 4
   ): Promise<DocumentInterface[]> {
     try {
       const queryVector = await this.embeddings.embedQuery(query);
-      return this.maxMarginalRelevanceSearchByVector(queryVector, k, options);
+      return this.maxMarginalRelevanceSearchByVector(queryVector, options, k);
     } catch (error) {
       console.error(
         "Error performing maximal marginal relevance search:",
@@ -642,8 +673,8 @@ class FirestoreVectorStore extends VectorStore {
    */
   async maxMarginalRelevanceSearchByVector(
     embedding: number[],
-    k = 4,
-    options?: MaxMarginalRelevanceSearchOptions
+    options?: MaxMarginalRelevanceSearchOptions,
+    k = 4
   ): Promise<DocumentInterface[]> {
     try {
       const {
@@ -653,13 +684,13 @@ class FirestoreVectorStore extends VectorStore {
       } = options || {};
 
       // Get more documents than needed for MMR calculation with embeddings
-      const searchResultsWithEmbeddings = await this._similarity_search(
+      const searchResultsWithEmbeddings = (await this._similarity_search(
         embedding,
         fetchK,
         filter,
         true,
         true
-      ) as Array<[DocumentInterface, number, number[]]>;
+      )) as Array<[DocumentInterface, number, number[]]>;
 
       if (searchResultsWithEmbeddings.length === 0) {
         return [];
@@ -671,13 +702,15 @@ class FirestoreVectorStore extends VectorStore {
 
       for (const [doc, , embeddingVector] of searchResultsWithEmbeddings) {
         candidateDocs.push(doc);
-        
+
         if (embeddingVector && embeddingVector.length > 0) {
           candidateEmbeddings.push(embeddingVector);
         } else {
           // Fallback: re-embed the document text if embedding is missing or empty
           try {
-            const docEmbedding = await this.embeddings.embedQuery(doc.pageContent);
+            const docEmbedding = await this.embeddings.embedQuery(
+              doc.pageContent
+            );
             candidateEmbeddings.push(docEmbedding);
           } catch (error) {
             console.warn(`Failed to re-embed document ${doc.id}:`, error);
@@ -717,6 +750,7 @@ class FirestoreVectorStore extends VectorStore {
    * @param {any} vector - The Firestore vector field.
    * @returns {number[]} - The vector as an array.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _vectorToArray(vector: any): number[] {
     if (Array.isArray(vector)) {
       return vector;
@@ -757,18 +791,19 @@ class FirestoreVectorStore extends VectorStore {
    */
   static async fromTexts(
     texts: string[],
-
     metadatas: object | object[],
-
     embeddings: EmbeddingsInterface,
-
     params: FirebaseStoreParams
   ): Promise<FirestoreVectorStore> {
+    if (!texts.length) {
+      return new FirestoreVectorStore({ embeddings, params });
+    }
+
     const docs = texts.map((text, index) => {
       const metadata = Array.isArray(metadatas) ? metadatas[index] : metadatas;
       return new Document({
         pageContent: text,
-        metadata,
+        metadata: metadata || {},
       });
     });
     return FirestoreVectorStore.fromDocuments(docs, embeddings, params);
